@@ -68,6 +68,50 @@ function cleanSvgForFont(raw){
   return s.trim();
 }
 
+
+function inlineSvgStylesForFont(svgStr){
+  // Convierte <style>.clase{fill:#...}</style> en atributos directos.
+  // Las tablas SVG de fuentes suelen fallar si dependen de CSS interno.
+  try{
+    const doc=new DOMParser().parseFromString(svgStr,"image/svg+xml");
+    if(doc.querySelector("parsererror")) return svgStr;
+    const root=doc.querySelector("svg") || doc.documentElement;
+    const rules={};
+    doc.querySelectorAll("style").forEach(st=>{
+      const css=st.textContent||"";
+      const re=/\.([\w-]+)\s*\{([^}]*)\}/g; let m;
+      while((m=re.exec(css))){
+        const props={};
+        m[2].split(";").forEach(part=>{
+          const idx=part.indexOf(":");
+          if(idx>0){props[part.slice(0,idx).trim()]=part.slice(idx+1).trim()}
+        });
+        rules[m[1]]=Object.assign(rules[m[1]]||{},props);
+      }
+    });
+    root.querySelectorAll("[class]").forEach(el=>{
+      const classes=(el.getAttribute("class")||"").trim().split(/\s+/).filter(Boolean);
+      classes.forEach(c=>{
+        const r=rules[c]; if(!r) return;
+        ["fill","stroke","stroke-width","opacity","fill-opacity","stroke-opacity","stroke-linecap","stroke-linejoin","stroke-miterlimit","fill-rule","clip-rule"].forEach(k=>{
+          if(r[k]!==undefined && !el.hasAttribute(k)) el.setAttribute(k,r[k]);
+        });
+      });
+      el.removeAttribute("class");
+    });
+    doc.querySelectorAll("style,title,desc,metadata").forEach(n=>n.remove());
+    if(root){root.removeAttribute("width");root.removeAttribute("height");}
+    const ser=new XMLSerializer();
+    if(root && root.tagName && root.tagName.toLowerCase().endsWith("svg")){
+      return Array.from(root.childNodes).map(n=>ser.serializeToString(n)).join("");
+    }
+    return ser.serializeToString(doc);
+  }catch(e){
+    console.warn("No se pudo incrustar CSS SVG:",e);
+    return svgStr;
+  }
+}
+
 function normSvg(raw,w,h,sc,ch){
   raw=cleanSvgForFont(raw); if(!raw)return"";
   let vb=parseVB(raw);
@@ -731,8 +775,8 @@ function buildSVGColor(family){
     let gIdx=-1;
     for(let i=0;i<go.length;i++){if(go[i].unicode===cp){gIdx=i;break}}
     if(gIdx<0)return;
-    const inner=String(info.svg||"").replace(/<\?xml[^?]*\?>/g,"").replace(/<!DOCTYPE[^>]*>/g,"").replace(/<svg[^>]*>/i,"").replace(/<\/svg\s*>/i,"").trim();
-    const docStr=`<svg id="glyph${gIdx}" version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"><rect width="0" height="0" fill="none"/>${inner}</svg>`;
+    const inner=inlineSvgStylesForFont(String(info.svg||"").replace(/<\?xml[^?]*\?>/g,"").replace(/<!DOCTYPE[^>]*>/g,""));
+    const docStr=`<svg id="glyph${gIdx}" version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" overflow="visible"><rect width="0" height="0" fill="none"/>${inner}</svg>`;
     docs.push({data:new TextEncoder().encode(docStr),sid:gIdx,eid:gIdx});
   });
 
@@ -776,19 +820,19 @@ async function doFont(mode){
   setBusy(true);prog(10);status("Generando…");
   await new Promise(r=>setTimeout(r,40));
   try{
-    let buf,suffix,ext="ttf";
+    let buf,suffix,ext="otf"; // opentype.js genera sfnt OTTO/CFF: usar .otf para que el sistema lo reconozca
     prog(30);
     if(mode==="bw"){
       buf=new Uint8Array(buildBaseFont(family,"Regular").toArrayBuffer());
-      suffix="regular";ext="ttf";
+      suffix="regular";ext="otf";
     } else if(mode==="otf"){
       // opentype.js genera OTF/CFF automáticamente (OTTO signature)
       buf=new Uint8Array(buildBaseFont(family,"Regular").toArrayBuffer());
       suffix="regular";ext="otf";
     } else if(mode==="colr"){
-      buf=buildCOLR(family);suffix="colr";ext="ttf";
+      buf=buildCOLR(family);suffix="colr-experimental";ext="otf";
     } else if(mode==="svg"){
-      buf=buildSVGColor(family);suffix="svg-color";ext="ttf";
+      buf=buildSVGColor(family);suffix="svg-color";ext="otf";
     }
     prog(90);
     // Verificar firma
